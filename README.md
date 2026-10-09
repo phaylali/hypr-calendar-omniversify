@@ -11,7 +11,7 @@ window.
 | Window type | normal XDG toplevel (not layer-shell) |
 | Calendars | Gregorian · Hijri (Umm al-Qura) · Amazigh (Julian) |
 | Data | vendored `src/data.json`, validated against morocco-date-api + Aladhan |
-| License | GPL-2.0 |
+| License | [The Unlicense](LICENSE.md) — public domain |
 
 ---
 
@@ -153,3 +153,30 @@ DEV_NOTES.md           architecture, quirks, and the things that bit us
 
 - [omniversify-usb-wireless-drivers](https://github.com/phaylali/omniversify-usb-wireless-drivers)
   — DKMS driver for the PIX-LINK LV-UW03 (ZTOP ZT9101), GPL-2.0.
+
+## Connect With Us
+
+- [Discord](https://discord.omniversify.com) — Join our community
+- [X/Twitter](https://twitter.com/omniversify) — Follow updates
+- [GitHub](https://github.com/phaylali) — Explore our work
+- [RSS Feed](/rss.xml) — Subscribe to updates
+
+## Support Us
+
+<p align="center">
+  <a href="https://ko-fi.com/omniversify">
+    <img src="https://raw.githubusercontent.com/phaylali/Omniversify/main/public/images/kofi_logo.svg" width="200" alt="Ko-Fi" />
+  </a>
+</p>
+
+<p align="center">
+  <strong>Keep us going</strong>
+</p>
+
+---
+
+Licensed under [The Unlicense](LICENSE.md) — public domain dedication.
+
+_Made by Moroccans, for the Omniverse_
+
+[![ReadMeSupportPalestine](https://raw.githubusercontent.com/Safouene1/support-palestine-banner/master/banner-project.svg)](https://donate.unrwa.org/-landing-page/en_EN)
