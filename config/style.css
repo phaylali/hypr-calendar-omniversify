@@ -1,0 +1,38 @@
+/*
+ * hypr-calendar - optional appearance overrides
+ *
+ * This file is plain GTK4 CSS. It is loaded AFTER the widget's own
+ * stylesheet, so anything written here wins. It may be empty.
+ *
+ * NOTE: GTK CSS has no "#" comments - only /* ... * / (as used here).
+ * A leading "#" would be read as an ID selector and rejected.
+ *
+ * Handy selectors:
+ *
+ *   window                 the whole widget
+ *   .cal-head              header bar (title, nav, calendar switcher)
+ *   .title / .title-sub    month+year heading / Tifinagh line beneath it
+ *   .nav                   prev / next month arrows
+ *   .cal-switch button     Gregorian | Hijri | Amazigh  (:checked = selected)
+ *   .theme-btn             Today button
+ *   .info                  "Today . G ... . H ... . A ..." summary line
+ *   .wd  .wk               weekday header (mo tu ...) / ISO week column
+ *   .day                   a day cell   .day.today  .day.sel  .day.other
+ *   .day .num .sec         day number / the secondary G/H/A tag beneath it
+ *
+ * Colours may be taken from the running system theme:
+ *
+ *   @theme_bg_color   @theme_fg_color   @borders
+ *   @theme_selected_bg_color   @theme_selected_fg_color
+ *   @theme_unfocused_bg_color
+ *   alpha(@theme_fg_color, 0.10)
+ *   mix(@theme_bg_color, @theme_fg_color, 0.1)
+ *
+ * Examples - uncomment to taste:
+ *
+ * .day { border-radius: 4px; min-height: 56px; }
+ * .day.today { background-color: #f5c2e7; color: #1e1e2e; }
+ * .cal-head { background-color: #181825; }
+ * .info { font-size: 10px; letter-spacing: 1px; }
+ * window { font-size: 12px; }
+ */

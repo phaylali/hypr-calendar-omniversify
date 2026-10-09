@@ -1,0 +1,17 @@
+# makepkg output
+/packaging/src/
+/packaging/pkg/
+*.pkg.tar*
+*.pkg.tar.zst.sig
+
+# the AUR clone - committed by accident in the driver repo, along with its
+# entire object store; keep it out of this one.
+/packaging/omniversify-hypr-calendar/
+
+# python
+__pycache__/
+*.pyc
+
+# editor noise
+*.swp
+*~

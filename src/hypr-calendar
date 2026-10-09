@@ -1,0 +1,838 @@
+#!/usr/bin/python3
+"""hypr-calendar - a multi-calendar overlay for Hyprland.
+
+Replaces lvsk-calendar in the waybar clock overlay. Three calendar systems
+(Gregorian, Hijri/Umm al-Qura, Amazigh/Julian), no bottom help bar, no
+theme switcher of its own.
+
+Theming follows the system GTK theme. GTK loads the theme's gtk.css at THEME
+priority (200) and ~/.config/gtk-4.0/gtk.css at USER priority (800), so the
+theme in settings.ini wins; this file only lays out the widget and binds a
+handful of semantic colours (@theme_selected_bg_color, @borders) that every
+reasonable theme defines. Per-machine tweaks go in
+~/.config/hypr-calendar/style.css, which is loaded last.
+
+Unlike the earlier layer-shell attempt, this is a normal XDG toplevel, so it
+takes keyboard focus, is draggable by its header bar, and leaves the tiled
+windows behind it fully interactive - the same behaviour the kitty-wrapped
+lvsk-calendar had, which is what we wanted all along.
+
+All calendar math is vendored in data.json (see DATA_PATH: ~/.local/share
+first, then /usr/share/hypr-calendar/) and was validated against
+morocco-date-api (Amazigh) and Aladhan (Hijri) before use.
+"""
+import datetime
+import json
+import os
+import sys
+
+os.environ.setdefault("GDK_BACKEND", "wayland")
+
+import gi
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gtk, Gdk, GLib
+
+HOME = os.path.expanduser("~")
+CONFIG_DIR = os.path.join(HOME, ".config/hypr-calendar")
+CONFIG_PATH = os.path.join(CONFIG_DIR, "config")
+
+# The tables live in $XDG_DATA_HOME first (manual install, or anything the
+# user regenerated) and fall back to the system copy the AUR package ships.
+# A package must never write into $HOME, so /usr/share is the canonical
+# location once installed and the local file only ever overrides it.
+_DATA_CANDIDATES = (
+    os.path.join(HOME, ".local/share/hypr-calendar/data.json"),
+    "/usr/share/hypr-calendar/data.json",
+)
+DATA_PATH = next((p for p in _DATA_CANDIDATES if os.path.exists(p)),
+                 _DATA_CANDIDATES[0])
+
+DATA = json.load(open(DATA_PATH))
+MONTHS = DATA["months"]
+MONTH_STARTS = DATA["month_starts"]
+HIJRI_OFFSET = DATA["hijri_offset"]
+
+# active-calendar key -> (months table key, period tag)
+# Tags are script-appropriate: Latin G for Gregorian, Arabic هـ (heh +
+# tatweel, the usual Hijri abbreviation) for Hijri, Tifinagh ⵣ for Amazigh.
+CALS = {
+    "gregorian": ("gregorian", "G"),
+    "hijri": ("islamic", "هـ"),
+    "amazigh": ("amazigh", "ⵣ"),
+}
+CAL_ORDER = ["gregorian", "hijri", "amazigh"]
+# switcher label + the font that actually has glyphs for it
+CAL_LABEL = {
+    "gregorian": ("Gregorian", ""),
+    "hijri": ("هجري", "lang-ar"),
+    "amazigh": ("ⵉⵎⴰⵣⵉⴳⵏ", "lang-tfng"),
+}
+# Bidi note: the widget never builds a mixed-script string. An Arabic tag
+# inside one text run makes Pango flip the whole paragraph to RTL and print
+# "28 ه"; verified by rendering. Every tag and every number is therefore its
+# own Gtk.Label (see _pair_box), so the runs never meet.
+WEEKDAYS = ["mo", "tu", "we", "th", "fr", "sa", "su"]
+
+
+# --------------------------------------------------------------------------
+# Calendar math (validated in gen_data.py against morocco-date-api + Aladhan)
+# --------------------------------------------------------------------------
+def g2j(y, m, d):
+    a = (14 - m) // 12
+    yy, mm = y + 4800 - a, m + 12 * a - 3
+    return d + (153 * mm + 2) // 5 + 365 * yy + yy // 4 - yy // 100 + yy // 400 - 32045
+
+
+def j2g(jdn):
+    j = jdn + 32044
+    g = (4 * j + 3) // 146097
+    c = j - (146097 * g) // 4
+    dp = (4 * c + 3) // 1461
+    e = c - (1461 * dp) // 4
+    mm = (5 * e + 2) // 153
+    return (100 * g + dp - 4800 + mm // 10, mm + 3 - 12 * (mm // 10),
+            e - (153 * mm + 2) // 5 + 1)
+
+
+def j2jul(jdn):
+    """JDN -> Julian (y, m, d). Amazigh year = Julian year + 950."""
+    c = jdn + 32082
+    d = (4 * c + 3) // 1461
+    e = c - (1461 * d) // 4
+    mm = (5 * e + 2) // 153
+    return (d - 4800 + mm // 10, mm + 3 - 12 * (mm // 10),
+            e - (153 * mm + 2) // 5 + 1)
+
+
+def jul2j(y, m, d):
+    a = (14 - m) // 12
+    yy, mm = y + 4800 - a, m + 12 * a - 3
+    return d + (153 * mm + 2) // 5 + 365 * yy + yy // 4 - 32083
+
+
+def j2hij(jdn):
+    """JDN -> Hijri (y, m, d) via the vendored Umm al-Qura table."""
+    rjd = jdn - 2400000
+    lo, hi = 0, len(MONTH_STARTS) - 1
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        if MONTH_STARTS[mid] <= rjd:
+            lo = mid
+        else:
+            hi = mid
+    mi = lo + HIJRI_OFFSET
+    return mi // 12 + 1, mi % 12 + 1, rjd - MONTH_STARTS[lo] + 1
+
+
+def to_cal(jdn, cal):
+    if cal == "gregorian":
+        return j2g(jdn)
+    if cal == "amazigh":
+        y, m, d = j2jul(jdn)
+        return y + 950, m, d
+    return j2hij(jdn)
+
+
+def month_bounds(cal, y, m):
+    """First JDN of the month and its length in days."""
+    if cal == "gregorian":
+        first = g2j(y, m, 1)
+        nxt = g2j(y + 1, 1, 1) if m == 12 else g2j(y, m + 1, 1)
+    elif cal == "amazigh":
+        jy = y - 950
+        first = jul2j(jy, m, 1)
+        nxt = jul2j(jy + 1, 1, 1) if m == 12 else jul2j(jy, m + 1, 1)
+    else:
+        idx = (y - 1) * 12 + m - 1 - HIJRI_OFFSET
+        if idx < 0 or idx + 1 >= len(MONTH_STARTS):
+            raise IndexError("hijri month out of vendored range")
+        first = MONTH_STARTS[idx] + 2400000
+        nxt = MONTH_STARTS[idx + 1] + 2400000
+    return first, nxt - first
+
+
+def step(y, m, delta):
+    m += delta
+    if m > 12:
+        y, m = y + 1, 1
+    elif m < 1:
+        y, m = y - 1, 12
+    return y, m
+
+
+def month_name(cal, m):
+    return MONTHS[CALS[cal][0]][m - 1]
+
+
+# --------------------------------------------------------------------------
+# Config
+# --------------------------------------------------------------------------
+STYLE_PATH = os.path.join(CONFIG_DIR, "style.css")
+
+CONFIG_TEMPLATE = """\
+# hypr-calendar
+#
+# Look & feel. The visual theme itself comes from the system GTK theme
+# (~/.config/gtk-4.0/settings.ini -> gtk-theme-name); this widget follows it.
+#
+# To change *this widget's* colours, sizes or fonts, write CSS into
+#   ~/.config/hypr-calendar/style.css
+# which is loaded after our stylesheet, so anything there wins. Example:
+#
+#   .day            { border-radius: 4px; }
+#   .day.today      { background-color: #f5c2e7; color: #1e1e2e; }
+#   .cal-head       { background-color: #181825; }
+#   .info           { font-size: 10px; letter-spacing: 1px; }
+#
+# calendar: which calendar system to open on.
+#   gregorian | hijri | amazigh
+"""
+
+
+def load_config():
+    cfg = {"calendar": "gregorian"}
+    try:
+        for line in open(CONFIG_PATH):
+            line = line.strip()
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                if k in cfg:
+                    cfg[k] = v.strip()
+    except OSError:
+        pass
+    if cfg["calendar"] not in CALS:
+        cfg["calendar"] = "gregorian"
+    return cfg
+
+
+def save_config(cfg):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    # only rewrite when the file is ours, so user comments survive
+    try:
+        head = open(CONFIG_PATH).read(16)
+        own = head.startswith("# hypr-calendar")
+    except OSError:
+        own = False
+    if not own:
+        open(CONFIG_PATH, "w").write(CONFIG_TEMPLATE)
+    body = open(CONFIG_PATH).read()
+    for k in ("calendar",):
+        old = [l for l in body.splitlines() if l.startswith(k + "=")]
+        if old and old[0] != f"{k}={cfg[k]}":
+            body = body.replace(old[0], f"{k}={cfg[k]}")
+        elif not old:
+            body = body.rstrip("\n") + f"\n{k}={cfg[k]}\n"
+    open(CONFIG_PATH, "w").write(body)
+
+
+def build_css():
+    """Structure only; every colour is either a GTK named colour (resolved by
+    the active system theme) or an alpha tint of the foreground, so the widget
+    tracks light and dark themes without knowing which one is running."""
+    return """
+/* Layout. Backgrounds are deliberately left to the system theme. */
+window { font-size: 13px; }
+.cal-head { border-bottom: 1px solid @borders; }
+.title {
+  font-size: 19px;
+  font-weight: 700;
+  color: @theme_fg_color;
+}
+.title-sub {
+  font-size: 12px;
+  font-weight: 500;
+  color: @theme_selected_bg_color;
+  font-family: "Noto Sans Tifinagh", "Noto Sans", sans-serif;
+}
+/* The year in the title is the entry point to the year picker. */
+.title-year {
+  background-color: transparent;
+  color: @theme_selected_bg_color;
+  font-size: 19px;
+  font-weight: 700;
+  padding: 0 6px;
+  border-radius: 8px;
+}
+.title-year:hover { background-color: alpha(@theme_selected_bg_color, 0.18); }
+/* The switcher runs in three scripts; each button picks the font that has
+   real glyphs for its label instead of relying on Pango's fallback. */
+.lang-ar { font-family: "Noto Sans Arabic", "Noto Sans", sans-serif; }
+.lang-tfng { font-family: "Noto Sans Tifinagh", "Noto Sans", sans-serif; }
+
+/* Controls: keep the theme's own fill, only settle shape and spacing. */
+button {
+  background-image: none;
+  box-shadow: none;
+  outline: none;
+  border: none;
+  text-shadow: none;
+  transition: none;
+}
+.nav {
+  min-width: 34px;
+  min-height: 34px;
+  border-radius: 9px;
+  background-color: transparent;
+  color: @theme_fg_color;
+  font-size: 17px;
+}
+.nav:hover { background-color: alpha(@theme_fg_color, 0.10); }
+.cal-switch button {
+  min-height: 28px;
+  padding: 0 11px;
+  border-radius: 8px;
+  background-color: transparent;
+  color: alpha(@theme_fg_color, 0.70);
+  font-size: 12px;
+  font-weight: 600;
+}
+.cal-switch button:hover { background-color: alpha(@theme_fg_color, 0.10); }
+.cal-switch button:checked {
+  background-color: @theme_selected_bg_color;
+  color: @theme_selected_fg_color;
+}
+.theme-btn {
+  min-height: 28px;
+  padding: 0 11px;
+  border-radius: 8px;
+  background-color: transparent;
+  color: alpha(@theme_fg_color, 0.70);
+  font-size: 12px;
+  font-weight: 600;
+}
+.theme-btn:hover { background-color: alpha(@theme_fg_color, 0.10); }
+
+/* Summary row. A box of labels, so tag and number stay separate runs. */
+.info {
+  background-color: transparent;
+  font-size: 11.5px;
+  color: alpha(@theme_fg_color, 0.65);
+  padding: 9px 4px 7px 4px;
+}
+.info .tag { font-weight: 700; color: alpha(@theme_fg_color, 0.85); }
+.info .sep { color: alpha(@theme_fg_color, 0.45); }
+
+/* Grid. */
+.wd {
+  font-size: 11px;
+  font-weight: 700;
+  color: alpha(@theme_fg_color, 0.65);
+  letter-spacing: 1px;
+}
+.wd.we { color: alpha(@theme_fg_color, 0.45); }
+.wk {
+  min-width: 30px;
+  font-size: 10.5px;
+  color: alpha(@theme_fg_color, 0.45);
+}
+.day {
+  min-width: 82px;
+  min-height: 72px;
+  border-radius: 11px;
+  /* An alpha tint rather than a fixed surface colour: it lands on the right
+     shade of "raised" for a light theme and a dark theme alike. */
+  background-color: alpha(@theme_fg_color, 0.07);
+  color: @theme_fg_color;
+}
+.day:hover { background-color: alpha(@theme_fg_color, 0.13); }
+.day .num { font-size: 17px; font-weight: 600; }
+.day .sec {
+  font-size: 9.5px;
+  font-weight: 500;
+  color: alpha(@theme_fg_color, 0.65);
+  letter-spacing: 0.3px;
+}
+.day .sec .tag { font-weight: 700; }
+/* Month and year cells: wider and roomier than a day cell. */
+.day.pick { min-width: 150px; min-height: 84px; }
+.day.pick .num { font-size: 16px; }
+.day.we .num { color: alpha(@theme_fg_color, 0.75); }
+.day.other { background-color: transparent; }
+.day.other .num { color: alpha(@theme_fg_color, 0.38); }
+.day.other .sec { color: alpha(@theme_fg_color, 0.32); }
+.day.other.we .num { color: alpha(@theme_fg_color, 0.32); }
+.day.today {
+  background-color: @theme_selected_bg_color;
+  color: @theme_selected_fg_color;
+}
+.day.today .num,
+.day.today .sec { color: @theme_selected_fg_color; }
+.day.sel { border: 2px solid alpha(@theme_selected_bg_color, 0.55); }
+.day.today.sel { border: 2px solid @theme_selected_fg_color; }
+"""
+
+
+# --------------------------------------------------------------------------
+# UI
+# --------------------------------------------------------------------------
+class Calendar(Gtk.ApplicationWindow):
+    def __init__(self, app, cfg):
+        super().__init__(application=app, title="hypr-calendar")
+        self.cfg = cfg
+        today = datetime.date.today()
+        self.today_jdn = g2j(today.year, today.month, today.day)
+        self.sel_jdn = self.today_jdn
+        y, m, _ = to_cal(self.today_jdn, self.cfg["calendar"])
+        self.view = (y, m)
+        # Drill-down level of the grid: the year picker, then the month picker,
+        # then the default day grid. The title's year button walks up again.
+        self.mode = "days"
+        self.provider = None
+
+        self.set_default_size(704, 648)
+
+        hb = Gtk.HeaderBar()
+        hb.add_css_class("cal-head")
+        # No minimize/maximize/close: this is a popup overlay, not a window
+        # you manage. Escape or the launcher key toggles it.
+        hb.set_show_title_buttons(False)
+        self._build_header(hb)
+        self.set_titlebar(hb)
+
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        root.add_css_class("root")
+        self.set_child(root)
+
+        # A box, not a label: each period is its own row of labels so the
+        # Arabic tag can never reorder the digits next to it.
+        self.info = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        self.info.add_css_class("info")
+        self.info.set_halign(Gtk.Align.CENTER)
+        root.append(self.info)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
+        scroll.set_vexpand(True)
+        root.append(scroll)
+
+        self.grid = Gtk.Grid()
+        self.grid.add_css_class("grid")
+        self.grid.set_column_spacing(5)
+        self.grid.set_row_spacing(5)
+        self.grid.set_margin_top(2)
+        self.grid.set_margin_bottom(8)
+        self.grid.set_margin_start(8)
+        self.grid.set_margin_end(8)
+        scroll.set_child(self.grid)
+
+        self.apply_css()
+        self.rebuild()
+
+        key = Gtk.EventControllerKey()
+        key.connect("key-pressed", self.on_key)
+        self.add_controller(key)
+
+    # ---- header ----
+    def _build_header(self, hb):
+        self.prev_btn = Gtk.Button(label="‹")
+        self.prev_btn.add_css_class("nav")
+        self.prev_btn.connect("clicked", lambda *_: self.nav_month(-1))
+        hb.pack_start(self.prev_btn)
+
+        self.next_btn = Gtk.Button(label="›")
+        self.next_btn.add_css_class("nav")
+        self.next_btn.connect("clicked", lambda *_: self.nav_month(1))
+        hb.pack_end(self.next_btn)
+
+        self.today_btn = Gtk.Button(label="Today")
+        self.today_btn.add_css_class("theme-btn")
+        self.today_btn.connect("clicked", lambda *_: self.go_today())
+        hb.pack_end(self.today_btn)
+
+        # Title: the month name, then the year as a button. The year is the
+        # entry point into the year picker -> month picker -> day grid cycle.
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        box.set_halign(Gtk.Align.CENTER)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        row.set_halign(Gtk.Align.CENTER)
+        self.title_lbl = Gtk.Label()
+        self.title_lbl.add_css_class("title")
+        self.title_year = Gtk.Button()
+        self.title_year.add_css_class("title-year")
+        self.title_year.connect("clicked", self.on_title_year)
+        row.append(self.title_lbl)
+        row.append(self.title_year)
+        self.title_sub = Gtk.Label()
+        self.title_sub.add_css_class("title-sub")
+        box.append(row)
+        box.append(self.title_sub)
+        hb.set_title_widget(box)
+
+        # Calendar switcher. Grouping/setting-active emits "toggled", so every
+        # handler is connected only after all three buttons exist and are in
+        # their final state - otherwise a stray signal during construction can
+        # call on_cal_toggle and move the view to the wrong month.
+        sw = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        sw.add_css_class("cal-switch")
+        self.cal_btns = {}
+        buttons = []
+        for cal in CAL_ORDER:
+            label, font_cls = CAL_LABEL[cal]
+            b = Gtk.ToggleButton(label=label)
+            # Each label is rendered by the font that actually has glyphs for
+            # it; "Noto Sans" alone would tofu the Tifinagh one.
+            if font_cls:
+                b.add_css_class(font_cls)
+            if buttons:
+                b.set_group(buttons[-1])
+            buttons.append(b)
+        for cal, b in zip(CAL_ORDER, buttons):
+            b.set_active(cal == self.cfg["calendar"])
+        for cal, b in zip(CAL_ORDER, buttons):
+            b.connect("toggled", self.on_cal_toggle, cal)
+            sw.append(b)
+            self.cal_btns[cal] = b
+        hb.pack_start(sw)
+
+    # ---- theme ----
+    def apply_css(self):
+        css = build_css()
+        # The user's own stylesheet loads last, so it wins over everything
+        # above. Missing file is normal - it is optional.
+        try:
+            css += "\n" + open(STYLE_PATH).read()
+        except OSError:
+            pass
+        if self.provider is None:
+            self.provider = Gtk.CssProvider()
+            # Above USER (800) on purpose: nothing in GTK's own scale is higher,
+            # but keeping the value free-form means a system gtk.css at 800 can
+            # never quietly win a tie against this widget's own rules.
+            Gtk.StyleContext.add_provider_for_display(
+                self.get_display(), self.provider, 900)
+        self.provider.load_from_data(css.encode("utf-8"))
+
+    def on_cal_toggle(self, btn, cal):
+        if not btn.get_active():
+            return
+        if self.cfg["calendar"] == cal:
+            return
+        self.cfg["calendar"] = cal
+        save_config(self.cfg)
+        # keep the cursor on the same point in time across calendars
+        self.view = to_cal(self.sel_jdn, cal)[:2]
+        self.rebuild()
+
+    # ---- navigation ----
+    def nav_month(self, delta):
+        """‹ › move one unit of whatever is on screen: a month on the day
+        grid, a year on the month grid, a year on the year grid."""
+        y, m = self.view
+        if self.mode == "days":
+            self.view = step(y, m, delta)
+        else:
+            self.view = (y + delta, m)
+        self.rebuild()
+
+    def go_today(self):
+        self.sel_jdn = self.today_jdn
+        self.view = to_cal(self.today_jdn, self.cfg["calendar"])[:2]
+        self.mode = "days"
+        self.rebuild()
+
+    def on_key(self, _ctrl, keyval, _code, state):
+        cal = self.cfg["calendar"]
+        if keyval == Gdk.KEY_Escape:
+            # Climb the picker first, close only from the day grid.
+            if self.mode == "months":
+                self.mode = "years"; self.rebuild(); return True
+            if self.mode == "years":
+                self.mode = "days"; self.rebuild(); return True
+            self.close()
+            return True
+        if keyval in (Gdk.KEY_Left, Gdk.KEY_h):
+            self.nav_month(-1); return True
+        if keyval in (Gdk.KEY_Right, Gdk.KEY_l):
+            self.nav_month(1); return True
+        if keyval in (Gdk.KEY_Up, Gdk.KEY_k):
+            self.view = (self.view[0] + 1, self.view[1]); self.rebuild(); return True
+        if keyval in (Gdk.KEY_Down, Gdk.KEY_j):
+            self.view = (self.view[0] - 1, self.view[1]); self.rebuild(); return True
+        if keyval in (Gdk.KEY_t, Gdk.KEY_Home):
+            self.go_today(); return True
+        if keyval in (Gdk.KEY_1, Gdk.KEY_2, Gdk.KEY_3):
+            target = CAL_ORDER[keyval - Gdk.KEY_1]
+            if target != cal:
+                self.cal_btns[target].set_active(True)
+            return True
+        return False
+
+    # ---- build ----
+    def _clear(self, widget):
+        for child in list(widget):
+            widget.remove(child)
+
+    # ---- picker construction ----
+    def _pair_box(self, tag, text, gap=4, cls=None):
+        """One "tag number" unit as *two* labels.
+
+        Keeping the tag in its own label is what makes the bidi safe: an
+        Arabic tag can never swallow the digits that follow it, because they
+        are not in the same text run. It is also what gives the requested
+        breathing room between the letter and the day number."""
+        b = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=gap)
+        t = Gtk.Label(label=tag)
+        t.add_css_class("tag")
+        b.append(t)
+        n = Gtk.Label(label=text)
+        if cls:
+            n.add_css_class(cls)
+        b.append(n)
+        return b
+
+    def _build_title(self, cal, y, m):
+        if self.mode == "years":
+            # No year button while the years themselves are on screen.
+            start = y - 5
+            self.title_lbl.set_text(f"{start} – {start + 11}")
+            self.title_year.set_visible(False)
+            self.title_sub.set_text("")
+            return
+        self.title_year.set_visible(True)
+        self.title_year.set_label(str(y))
+        if self.mode == "months":
+            # The bare year is the whole title; it reads as the button it is.
+            self.title_lbl.set_text("")
+            self.title_sub.set_text("")
+            return
+        nm = month_name(cal, m)
+        self.title_lbl.set_text(nm["latin"])
+        self.title_sub.set_text(nm["tifinagh"])
+
+    def _build_info(self):
+        """Today in all three systems. Split into labels for the same bidi
+        reason as the day cells, plus a real gap after each period tag."""
+        self._clear(self.info)
+        self.info.append(Gtk.Label(label="Today"))
+        for i, c in enumerate(CAL_ORDER):
+            sep = Gtk.Label(label="·")
+            sep.add_css_class("sep")
+            self.info.append(sep)
+            cy, cm, cd = to_cal(self.today_jdn, c)
+            mn = month_name(c, cm)
+            self.info.append(self._pair_box(
+                CALS[c][1], f"{cd} {mn['latin']} {cy}", gap=4))
+
+    def _build_days(self, cal, y, m):
+        # weekday header row
+        for i, w in enumerate(WEEKDAYS):
+            lbl = Gtk.Label(label=w)
+            lbl.add_css_class("wd")
+            if i >= 5:
+                lbl.add_css_class("we")
+            self.grid.attach(lbl, i + 1, 0, 1, 1)
+
+        try:
+            first, length = month_bounds(cal, y, m)
+        except (IndexError, OverflowError):
+            lbl = Gtk.Label(label="Hijri date outside vendored range (1343-1500)")
+            self.grid.attach(lbl, 1, 1, 7, 1)
+            return
+
+        others = [c for c in CAL_ORDER if c != cal]
+        start = first - (first % 7)          # Monday-aligned
+        for i in range(42):
+            jdn = start + i
+            col, row = (i % 7) + 1, (i // 7) + 1
+
+            if col == 1:                      # ISO week number of that row
+                wk = datetime.date(*j2g(jdn)).isocalendar()[1]
+                wl = Gtk.Label(label=str(wk))
+                wl.add_css_class("wk")
+                self.grid.attach(wl, 0, row, 1, 1)
+
+            cy, cm, cd = to_cal(jdn, cal)
+            in_month = (cy, cm) == (y, m)
+
+            btn = Gtk.Button()
+            btn.add_css_class("day")
+            if not in_month:
+                btn.add_css_class("other")
+            if (i % 7) >= 5:
+                btn.add_css_class("we")
+            if jdn == self.today_jdn:
+                btn.add_css_class("today")
+            if jdn == self.sel_jdn:
+                btn.add_css_class("sel")
+
+            # Which secondary calendar goes in which corner. Amazigh always
+            # sits bottom-left, Hijri always bottom-right, and Gregorian
+            # fills whichever corner is left free - so each system keeps the
+            # same corner regardless of which one you are browsing.
+            left_cal = "amazigh" if "amazigh" in others else "gregorian"
+            right_cal = next(c for c in others if c != left_cal)
+
+            # Gtk.Overlay rather than a vertical box: the day number must be
+            # centred in the whole cell, not in the space left over above the
+            # corner row. The box would push it up; the overlay pins the
+            # corner row to the bottom and leaves the number free to centre.
+            ov = Gtk.Overlay()
+            num = Gtk.Label(label=str(cd))
+            num.add_css_class("num")
+            num.set_halign(Gtk.Align.CENTER)
+            num.set_valign(Gtk.Align.CENTER)
+            ov.set_child(num)
+
+            # Margins + spacing kept equal to the 9px gap the old single-row
+            # layout used, so a cell does not get any wider than it was: a
+            # wider cell would push the grid past the popup's natural width.
+            corners = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+            corners.add_css_class("sec")
+            corners.set_halign(Gtk.Align.FILL)
+            corners.set_valign(Gtk.Align.END)
+            corners.set_margin_start(4)
+            corners.set_margin_end(4)
+            corners.set_margin_bottom(5)
+
+            left = self._pair_box(CALS[left_cal][1],
+                                  str(to_cal(jdn, left_cal)[2]))
+            left.set_halign(Gtk.Align.START)
+            left.set_hexpand(True)          # pushes the right pair outward
+            right = self._pair_box(CALS[right_cal][1],
+                                   str(to_cal(jdn, right_cal)[2]))
+            right.set_halign(Gtk.Align.END)
+            corners.append(left)
+            corners.append(right)
+            ov.add_overlay(corners)
+
+            btn.set_child(ov)
+            btn.connect("clicked", self.on_pick, jdn)
+            self.grid.attach(btn, col, row, 1, 1)
+
+    def _build_months(self, cal, y, m):
+        ty, tm, _ = to_cal(self.today_jdn, cal)
+        for i in range(12):
+            mm = i + 1
+            btn = Gtk.Button()
+            btn.add_css_class("day")
+            btn.add_css_class("pick")
+            if (ty, tm) == (y, mm):
+                btn.add_css_class("today")
+            if mm == m:
+                btn.add_css_class("sel")
+
+            nm = month_name(cal, mm)
+            vb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+            vb.set_halign(Gtk.Align.CENTER)
+            num = Gtk.Label(label=nm["latin"])
+            num.add_css_class("num")
+            vb.append(num)
+            sub = Gtk.Label(label=nm["tifinagh"])
+            sub.add_css_class("sec")
+            vb.append(sub)
+
+            btn.set_child(vb)
+            btn.connect("clicked", self.on_pick_month, mm)
+            self.grid.attach(btn, i % 4, i // 4, 1, 1)
+
+    def _years_at(self, cal, y):
+        """(tag, year) for the other systems at the middle of calendar year y."""
+        try:
+            if cal == "gregorian":
+                jdn = g2j(y, 7, 1)
+            elif cal == "amazigh":
+                jdn = jul2j(y - 950, 7, 1)
+            else:
+                first, length = month_bounds(cal, y, 6)
+                jdn = first + length // 2
+        except (IndexError, OverflowError, ValueError):
+            return []
+        return [(CALS[oc][1], str(to_cal(jdn, oc)[0]))
+                for oc in CAL_ORDER if oc != cal]
+
+    def _build_years(self, cal, y):
+        start = y - 5
+        today_y = to_cal(self.today_jdn, cal)[0]
+        for i in range(12):
+            yy = start + i
+            btn = Gtk.Button()
+            btn.add_css_class("day")
+            btn.add_css_class("pick")
+            btn.add_css_class("year")
+            if yy == today_y:
+                btn.add_css_class("today")
+            if yy == y:
+                btn.add_css_class("sel")
+
+            vb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+            vb.set_halign(Gtk.Align.CENTER)
+            num = Gtk.Label(label=str(yy))
+            num.add_css_class("num")
+            vb.append(num)
+
+            others = self._years_at(cal, yy)
+            if others:
+                sec = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
+                sec.add_css_class("sec")
+                sec.set_halign(Gtk.Align.CENTER)
+                for tag, other_y in others:
+                    sec.append(self._pair_box(tag, other_y))
+                vb.append(sec)
+
+            btn.set_child(vb)
+            btn.connect("clicked", self.on_pick_year, yy)
+            self.grid.attach(btn, i % 4, i // 4, 1, 1)
+
+    def rebuild(self):
+        cal = self.cfg["calendar"]
+        y, m = self.view
+        self._clear(self.grid)
+
+        # The pickers are four across and centred as a block; the day grid
+        # keeps its natural seven-plus-week-column sizing and fills the width.
+        # Rows are deliberately NOT homogeneous and the grid does not stretch
+        # vertically: homogeneous rows would soak up the whole viewport and
+        # turn three rows of months into 300px slabs.
+        pick = self.mode != "days"
+        self.grid.set_column_homogeneous(pick)
+        self.grid.set_row_homogeneous(False)
+        self.grid.set_halign(Gtk.Align.CENTER if pick else Gtk.Align.FILL)
+        self.grid.set_valign(Gtk.Align.CENTER if pick else Gtk.Align.FILL)
+
+        self._build_title(cal, y, m)
+        self._build_info()
+
+        if self.mode == "years":
+            self._build_years(cal, y)
+        elif self.mode == "months":
+            self._build_months(cal, y, m)
+        else:
+            self._build_days(cal, y, m)
+
+    # ---- picker selection ----
+    def on_title_year(self, *_):
+        """Clicking the year in the title swaps the day grid for the years."""
+        if self.mode in ("days", "months"):
+            self.mode = "years"
+            self.rebuild()
+
+    def on_pick_year(self, _btn, yy):
+        """Picking a year drills down to that year's months."""
+        self.view = (yy, self.view[1])
+        self.mode = "months"
+        self.rebuild()
+
+    def on_pick_month(self, _btn, mm):
+        """Picking a month returns to the default day grid."""
+        self.view = (self.view[0], mm)
+        self.mode = "days"
+        self.rebuild()
+
+    def on_pick(self, _btn, jdn):
+        self.sel_jdn = jdn
+        self.rebuild()
+
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="app.omniversify.hyprcalendar")
+
+    def do_activate(self):
+        win = self.props.active_window
+        if win is None:
+            win = Calendar(self, load_config())
+        win.present()
+
+
+if __name__ == "__main__":
+    sys.exit(App().run([]))
