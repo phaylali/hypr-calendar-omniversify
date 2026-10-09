@@ -149,11 +149,6 @@ DEV_NOTES.md           architecture, quirks, and the things that bit us
 
 ---
 
-## Related
-
-- [omniversify-usb-wireless-drivers](https://github.com/phaylali/omniversify-usb-wireless-drivers)
-  — DKMS driver for the PIX-LINK LV-UW03 (ZTOP ZT9101), GPL-2.0.
-
 ## Connect With Us
 
 - [Discord](https://discord.omniversify.com) — Join our community

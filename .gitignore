@@ -4,8 +4,7 @@
 *.pkg.tar*
 *.pkg.tar.zst.sig
 
-# the AUR clone - committed by accident in the driver repo, along with its
-# entire object store; keep it out of this one.
+# the AUR clone - its own repo, never belongs here
 /packaging/omniversify-hypr-calendar/
 
 # python

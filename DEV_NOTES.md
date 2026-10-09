@@ -200,8 +200,7 @@ Two rules learned the hard way:
 ## Packaging
 
 - **AUR**: `omniversify-hypr-calendar`, built from a `git` source pinned to
-  `v$pkgver`, `sha256sums=('SKIP')` — same scheme as
-  `omniversify-usb-wireless-drivers-lv-uw03`.
+  `v$pkgver`, `sha256sums=('SKIP')`.
 - **`arch=('any')`** — no compiled code.
 - **License**: The Unlicense (`LICENSE.md`) — public domain dedication,
   `license=('Unlicense')` in the PKGBUILD. Dual licensing was considered and
@@ -210,9 +209,7 @@ Two rules learned the hard way:
   second option *would* have been legitimate — but the Unlicense already
   lets anyone do anything with the code, so the GPL option added no
   leverage. Note that no GPL-2.0 code was ever involved; the licence is a
-  grant, not a compliance obligation. The *other* project in this family —
-  `omniversify-usb-wireless-drivers` — is GPL-2.0-only: it is a derivative
-  of a GPLv2 vendor driver and cannot be relicensed.
+  grant, not a compliance obligation.
 - **depends**: `python`, `python-gobject` (the `gi` module), `gtk4` (ships
   `Gtk-4.0.typelib`), `hyprland` (for `hyprctl` in the launcher).
   There is no `python-gtk4` package on Arch — that was the first wrong guess.
@@ -221,9 +218,8 @@ Two rules learned the hard way:
   `/usr/share/hypr-calendar/data.json`; `DATA_PATH` checks the user copy first
   and falls back to the system copy. A package writing to `$HOME` would break
   multi-user installs and system upgrades.
-- The AUR clone lives in `packaging/<pkgname>/` and is **gitignored** — for
-  the driver package it was accidentally committed along with its whole `.git`
-  object store.
+- The AUR clone lives in `packaging/<pkgname>/` and is **gitignored** — it is
+  a separate repository, not part of this project.
 
 ---
 
@@ -231,8 +227,6 @@ Two rules learned the hard way:
 
 - [ ] `tools/gen_data.py` still points at `/tmp/opencode/*` scratch files;
       take them as arguments.
-- [ ] Confirm a cold boot still autoloads the WiFi driver (reboot test pending
-      on the other project).
 - [ ] The window's natural size (≈799px) exceeds the 704×648 the launcher
       requests; either drop a day column's `min-width` or ask for the real
       size.
