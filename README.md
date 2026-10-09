@@ -11,7 +11,7 @@ window.
 | Window type | normal XDG toplevel (not layer-shell) |
 | Calendars | Gregorian · Hijri (Umm al-Qura) · Amazigh (Julian) |
 | Data | vendored `src/data.json`, validated against morocco-date-api + Aladhan |
-| License | Dual: [The Unlicense](LICENSE.md) **or** GPL-2.0 — your choice |
+| License | [The Unlicense](LICENSE.md) — public domain |
 
 ---
 
@@ -175,7 +175,7 @@ DEV_NOTES.md           architecture, quirks, and the things that bit us
 
 ---
 
-Licensed under [The Unlicense](LICENSE.md) or GPL-2.0 — your choice.
+Licensed under [The Unlicense](LICENSE.md) — public domain dedication.
 
 _Made by Moroccans, for the Omniverse_
 

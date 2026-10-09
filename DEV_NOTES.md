@@ -203,15 +203,16 @@ Two rules learned the hard way:
   `v$pkgver`, `sha256sums=('SKIP')` — same scheme as
   `omniversify-usb-wireless-drivers-lv-uw03`.
 - **`arch=('any')`** — no compiled code.
-- **License**: dual — `Unlicense OR GPL-2.0-only`. `LICENSE.md` carries the
-  header explaining the choice plus both canonical texts, and the PKGBUILD
-  declares both (`license=('Unlicense' 'GPL-2.0-only')`). SPDX:
-  `Unlicense OR GPL-2.0-only`. Dual licensing is only possible because every
-  line here is original: the month tables came from this author's own MIT
-  `moroccan-time-api`, and the widget, launcher and packaging are written
-  from scratch. The *other* project in this family —
-  `omniversify-usb-wireless-drivers` — stays GPL-2.0-only: it is a
-  derivative of a GPLv2 vendor driver and cannot be relicensed.
+- **License**: The Unlicense (`LICENSE.md`) — public domain dedication,
+  `license=('Unlicense')` in the PKGBUILD. Dual licensing was considered and
+  deliberately dropped: every line here is original (the month tables came
+  from this author's own MIT `moroccan-time-api`), so adding GPL-2.0 as a
+  second option *would* have been legitimate — but the Unlicense already
+  lets anyone do anything with the code, so the GPL option added no
+  leverage. Note that no GPL-2.0 code was ever involved; the licence is a
+  grant, not a compliance obligation. The *other* project in this family —
+  `omniversify-usb-wireless-drivers` — is GPL-2.0-only: it is a derivative
+  of a GPLv2 vendor driver and cannot be relicensed.
 - **depends**: `python`, `python-gobject` (the `gi` module), `gtk4` (ships
   `Gtk-4.0.typelib`), `hyprland` (for `hyprctl` in the launcher).
   There is no `python-gtk4` package on Arch — that was the first wrong guess.
