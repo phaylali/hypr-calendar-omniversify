@@ -203,9 +203,14 @@ Two rules learned the hard way:
   `v$pkgver`, `sha256sums=('SKIP')` — same scheme as
   `omniversify-usb-wireless-drivers-lv-uw03`.
 - **`arch=('any')`** — no compiled code.
-- **License**: The Unlicense (`LICENSE.md`), declared as
-  `license=('Unlicense')` in the PKGBUILD. The *other* project in this
-  family — `omniversify-usb-wireless-drivers` — stays GPL-2.0: it is a
+- **License**: dual — `Unlicense OR GPL-2.0-only`. `LICENSE.md` carries the
+  header explaining the choice plus both canonical texts, and the PKGBUILD
+  declares both (`license=('Unlicense' 'GPL-2.0-only')`). SPDX:
+  `Unlicense OR GPL-2.0-only`. Dual licensing is only possible because every
+  line here is original: the month tables came from this author's own MIT
+  `moroccan-time-api`, and the widget, launcher and packaging are written
+  from scratch. The *other* project in this family —
+  `omniversify-usb-wireless-drivers` — stays GPL-2.0-only: it is a
   derivative of a GPLv2 vendor driver and cannot be relicensed.
 - **depends**: `python`, `python-gobject` (the `gi` module), `gtk4` (ships
   `Gtk-4.0.typelib`), `hyprland` (for `hyprctl` in the launcher).
