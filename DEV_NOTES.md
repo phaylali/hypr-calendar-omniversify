@@ -102,33 +102,171 @@ classes: the font family is chosen per element, not per string.
 
 ---
 
-## Day-cell layout
+## Cell layout — day, month and year
 
-`_build_days()` builds each cell as a **`Gtk.Overlay`**:
+Every cell in the widget — a day, a month, a year — is built the same way, as
+a **`Gtk.Overlay`** (`_build_days()`, `_build_months()`, `_build_years()`):
 
-- **child** — the day number, `halign`/`valign` = `CENTER` → dead centre of
-  the square.
-- **overlay** — a horizontal box pinned to `valign = END` with the two
-  secondary dates.
+- **child** — the value being picked (`num`), `halign`/`valign` = `CENTER` →
+  dead centre of the square.
+- **overlay** — a horizontal box pinned to `valign = END` carrying the other
+  two systems, built by `_corner_boxes()`.
 
 A plain vertical box cannot do this: the corner row consumes height and pushes
-the number *up*, so it ends up centred only in the leftover space.
+the value *up*, so it ends up centred only in the leftover space. That is
+precisely how the two pickers looked before this: the month name sat above a
+Tifinagh subtitle instead of owning the cell, and the year's secondary years
+were a single centred row instead of two corners. The day grid was right and
+the pickers were not, because the overlay had only ever been written for days.
 
-Which corner gets which system is fixed, not positional:
+Which corner gets which system is fixed, not positional, and now lives in one
+place — `_corner_boxes()`:
 
 ```python
-left_cal  = "amazigh" if "amazigh" in others else "gregorian"
-right_cal = next(c for c in others if c != left_cal)
+left_cal  = "amazigh" if "amazigh" in cells else "gregorian"
+right_cal = next(c for c in cells if c != left_cal)
 ```
 
 so Amazigh is always bottom-left, Hijri always bottom-right, and Gregorian
 fills whichever corner is free — each system keeps its corner in all three
-modes instead of shuffling when you switch.
+modes instead of shuffling when you switch. The rule existed in three
+variations: spelled out in the day cells, present only as a centred row in the
+year picker, absent from the month picker. Factoring it out is what stops them
+drifting apart again.
 
 The corner row's `margin_*` (4) + `spacing` (2) are deliberately kept equal to
 the 9px gap the old single-row layout used. Widening it would widen the grid,
 and the grid sets the popup's natural width — which already exceeds the 704px
 the launcher asks for (7 day columns × 82px `min-width`).
+
+### What a corner holds
+
+- **day cell** — the other two systems' day numbers (`28 هـ`, `26 ⵣ`).
+- **month cell** — their month names, each in *its own* script, taken at the
+  midpoint of the month (`_months_at()`). Midpoint, not the first day: a
+  Gregorian January spans two Hijri months, so the middle names the one that
+  holds most of it.
+- **year cell** — their years at the midpoint of the year (`_years_at()`).
+
+### Sizing: why nothing may be ellipsised
+
+Corner month names are the longest string a corner ever carries ("Jumada
+al-Akhira"), so the row can end up wider than the centred value above it. That
+matters because of how `Gtk.Overlay` sizes itself: **it asks only its main
+child**, and lays overlay children out *inside* whatever that gives it. A
+corner row wider than the centre is therefore squeezed until it truncates —
+and only the cells that are wide enough to hit the limit truncate, so the bug
+reads as "November and December are cut off but January is fine".
+The fix is a **CSS floor, not Python arithmetic**: the picker cells get a
+`min-width` large enough that their centre can never be the narrow thing in
+the row, so the overlay has no reason to squeeze it.
+
+```css
+.day.pick  { min-width: 90px; }    /* year picker  */
+.day.month { min-width: 158px; }   /* month picker */
+```
+
+Both numbers are measured, not chosen — the worst corner row any of the three
+systems produces, plus a pixel: **89px** for the year corner row (`G 2021`
++ `هـ 1442`), **157px** for the month corner row (`Jumada al-Akhira` at its
+midpoint). The values are identical across Gregorian, Hijri and Amazigh, so
+one number covers all three calendars and no cell ever measures wider than its
+own allocation. The day grid needs none: `82px` (`.day`) already clears a day's
+two short corner numbers, which is why it measures the same 799px before and
+after the whole rework.
+
+There is no size-request code in Python at all. An earlier version asked the
+overlay for the corner row's width (`_attach_corners()`, with a `+24` fudge for
+margins and letter-spacing that Pango applies at render time rather than at
+measure time) and set it back on the cell. It worked and it was wrong: a cell
+that grows itself past its stylesheet contradicts the stylesheet, and the next
+person to read the CSS would be reading a lie. The floor lives where the rest
+of the sizing lives.
+
+Both numbers were taken from a probe that builds the widget, walks the mapped
+tree and reports `get_preferred_size()` per cell — a scratch script, not part
+of the repo, because the numbers it produced are already written into the CSS
+and there is nothing left for it to check. The measurement that matters, run
+once per change: **days 799px, months 759px, years 487px, identical for
+Gregorian, Hijri and Amazigh, with no corner row anywhere wider than the cell
+holding it.**
+
+**No label in this app may set `ellipsize`.** It was first written with
+`Pango.EllipsizeMode.END` on corner month names as a "guard that never fires",
+and it fired on every window: a window is mapped once at a size it does not
+keep (GTK has to lay out before it knows its real size, and the launcher asks
+for 704px against a 951px natural width), so every corner label was allocated
+narrow *once*. GTK4 labels latch from that point: the measured natural width
+becomes the width of the already-ellipsised text and never recovers, even once
+the window is 100px wider than it needs. `November` measured 65px as built and
+55px after a single narrow allocation, and printed `G Novemb...` for the rest
+of its life in a cell with 49px going spare. The tell that this — and not a
+real width problem — was the cause: GTK's own allocation report said
+`nat == alloc` for the truncated label, and the truncation appeared on short
+names (`July`) but not long ones (`September`), because what matters is which
+cell sized its column, not how long the string is. Full text with no ellipsis
+mechanism is the only state with no such latch.
+
+### Month names: native scripts, not transliteration
+
+```python
+NATIVE = {"gregorian": "latin", "hijri": "arabic", "amazigh": "tifinagh"}
+month_native(cal, m)  # -> month_name(cal, m)[NATIVE[cal]]
+```
+
+`data.json` already carried all three spellings for every month, so this is a
+decision about which one *is* the name — not new data. The other two appear as
+the corners, in their own scripts, which is what makes the cell readable at a
+glance: you recognise `المحرّم` as Arabic without first mapping a
+transliteration onto it.
+
+The rule is the same in three places, so no two can disagree — `_build_months()`
+for the month cells, `_build_title()` for the title over the day grid,
+`_build_info()` for the Today strip:
+
+| system | month picker centre | title over the day grid | its Today strip |
+| --- | --- | --- | --- |
+| Gregorian | `January` | `October` | `G 10 October 2026` |
+| Hijri | `المحرّم` | `شعبان` | `هـ 29 ربيع الآخر 1448` |
+| Amazigh | `ⵉⵏⵏⴰⵢⵔ` | `ⵛⵓⵜⴰⵏⴱⵉⵔ` | `ⵣ 27 ⵛⵓⵜⴰⵏⴱⵉⵔ 2976` |
+
+Two details that only look like decoration:
+
+- **The title wears a font class for whatever script it holds** — `lang-ar` or
+  `lang-tfng`, taken from the same `CAL_LABEL` table the switcher buttons use,
+  so `شعبان` renders in Noto Sans Arabic rather than in whatever Pango would
+  pick by fallback, and matches the `هجري` button next to it. It is removed on
+  the way into the month and year titles, which are digits: `1447 – 1458` must
+  not inherit an Arabic face from the screen you just left.
+- **The second line under the title is the same month in another script** —
+  Tifinagh, except on Amazigh where the title already *is* Tifinagh, where it
+  drops to Latin (`Cutanbir`) instead of printing the same line twice.
+
+Each part of a date in the strip is its own label. An Arabic run that holds
+Western digits lets Pango reorder the paragraph, which is how you end up with
+`4 1447 ربيع الآخر`; separate labels make that impossible because the bidi
+algorithm never sees two scripts in one run. No label in the app sets
+`ellipsize`, for the latch reason above.
+
+### The year picker pages by whole pages
+
+Twelve years on screen, `YEARS_PER_PAGE = 12`, and `YEAR_LEAD = 5` of them
+above the current one — so a page reads `2021 – 2032` with 2026 in the middle
+rather than at the top edge. Title and grid both take their years from that
+same pair of constants, which is what stops them drifting apart.
+
+`←`/`→` move by a **whole page** (`y ± YEARS_PER_PAGE`), `↑`/`↓` step one year
+(`_year_step()`, which returns 12 in years mode and 1 in the day grid, so the
+arrow keys mean "the thing you can see" in both). Pages never overlap: 2009 –
+2020, then 2021 – 2032.
+
+The outline (`.sel`) goes on the **browsed** year — `_build_years()` compares
+against `y`, the view anchor, not the year you picked to get here. Because
+`YEAR_LEAD` is fixed at 5 and pages advance by 12, that means the outline sits
+on the 6th cell of every page and follows you as you page, rather than
+disappearing when the picked year scrolls off the end of the list. It is a
+position marker, not a "you chose this one" marker; the chosen year is only
+recoverable from the day grid you came from.
 
 ---
 

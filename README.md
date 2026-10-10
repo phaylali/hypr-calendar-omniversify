@@ -30,9 +30,9 @@ The two things worth having are the ones a `waybar`/`eww` widget cannot give you
 - **A real window.** It takes keyboard focus, it is draggable, and `Escape`
   closes it. It does not join the tiling layout, so it never pushes your tiles
   around.
-- **Three systems at once.** Every day cell shows the day number of the system
-  you are browsing, plus the same date in the other two systems in the bottom
-  corners — so you can read `28 هـ` next to `9` and `26 ⵣ` without switching.
+- **Three systems at once.** Every cell shows the value of the system you are
+  browsing, plus the same value in the other two systems in the bottom corners
+  — so a day reads `28 هـ` next to `9` and `26 ⵣ` without switching.
 
 ---
 
@@ -41,15 +41,52 @@ The two things worth having are the ones a `waybar`/`eww` widget cannot give you
 - **Year → month → day drill-down.** Click the year in the title for the year
   picker, click a year for the month picker, click a month for the day grid.
   `Escape` climbs back one level at a time and only closes from the top.
+- **Years arrive twelve at a time.** The year picker shows a page of 12 with
+  the current year in the middle, and `←`/`→` turn whole pages (`2021 – 2032`,
+  then `2033 – 2044`) instead of walking year by year; `↑`/`↓` step one at a
+  time when you want that.
 - **Calendar switcher** in the header: `Gregorian`, `هجري`, `ⵉⵎⴰⵣⵉⴳⵏ`.
 - **No help bar, no theme switcher.** The visual theme is the system GTK theme;
   this widget follows it instead of carrying a palette of its own.
 - **Bidi-safe labels.** Arabic and Tifinagh tags never swallow the digits
   beside them, because each tag and each number is its own `Gtk.Label` (see
   `DEV_NOTES.md`).
-- **Corner layout in the day cells.** The day number is centred in the square;
-  Amazigh always sits bottom-left, Hijri always bottom-right, and Gregorian
-  fills whichever corner is free.
+- **Corner layout in every view.** The value you are picking is centred in the
+  square — day number, month name or year — and the other two systems split the
+  bottom row: Amazigh always bottom-left, Hijri always bottom-right, Gregorian
+  fills whichever corner is free. One rule, shared by the day grid, the month
+  picker and the year picker — and no corner is ever truncated: cells grow to
+  fit the names they carry (see `DEV_NOTES.md`).
+- **Month names in their own script.** `January` in Latin, `المحرّم` in Arabic,
+  `ⵉⵏⵏⴰⵢⵔ` in Tifinagh — each system is read in the script it belongs to
+  rather than transliterated, and the other two appear as the corners.
+
+---
+
+## Screenshots
+
+The three screens, in that order: the **day grid**, the **month picker** and the
+**year picker**. Each one is shown with a different system in front, so the rule
+from the Features list is visible — the name you are picking is written in its
+own script, the other two systems sit in the corners.
+
+**Day grid** (browsing Gregorian — `October` in Latin, `ربيع الآخر` and
+`ⵛⵓⵜⴰⵏⴱⵉⵔ` underneath):
+
+![Day grid — Gregorian month with Hijri and Amazigh corners](screenshots/days.png)
+
+**Month picker** (browsing Hijri — the twelve months in Arabic, Gregorian and
+Amazigh years in the corners):
+
+![Month picker — Hijri months in Arabic](screenshots/months.png)
+
+**Year picker** (browsing Amazigh — twelve years paged at a time, `G 2026` and
+`هـ 1448` in the corners):
+
+![Year picker — Amazigh years, twelve per page](screenshots/years.png)
+
+The window wears the GTK theme it is running under (Catppuccin Mocha here), so
+it follows your desktop rather than shipping a palette of its own.
 
 ---
 
@@ -144,6 +181,7 @@ config/style.css       optional user override (comments only)
 scripts/calendar.sh    waybar launcher: float, resize, centre, toggle
 scripts/install.sh     manual install into $HOME
 packaging/             PKGBUILD for the AUR package
+screenshots/           the three screens, as shown in this README
 DEV_NOTES.md           architecture, quirks, and the things that bit us
 ```
 

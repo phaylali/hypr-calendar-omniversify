@@ -73,6 +73,13 @@ CAL_LABEL = {
 # own Gtk.Label (see _pair_box), so the runs never meet.
 WEEKDAYS = ["mo", "tu", "we", "th", "fr", "sa", "su"]
 
+# The year picker shows a page of years at a time, centred on the year you
+# are on: YEAR_LEAD years before it, then the rest. The ‹ › arrows therefore
+# move a whole page - stepping one year would show 2020-2031 after
+# 2021-2032, half of it a page you have already seen.
+YEARS_PER_PAGE = 12
+YEAR_LEAD = 5
+
 
 # --------------------------------------------------------------------------
 # Calendar math (validated in gen_data.py against morocco-date-api + Aladhan)
@@ -162,6 +169,18 @@ def step(y, m, delta):
 
 def month_name(cal, m):
     return MONTHS[CALS[cal][0]][m - 1]
+
+
+# The script each system is *read* in: Gregorian in Latin, Hijri in Arabic,
+# Amazigh in Tifinagh. This is what a month's own name is written in
+# everywhere the month is the subject -- the title, the month picker -- while
+# the other two scripts stay available as the secondary corners.
+NATIVE = {"gregorian": "latin", "hijri": "arabic", "amazigh": "tifinagh"}
+
+
+def month_native(cal, m):
+    """The month's name in its own script."""
+    return month_name(cal, m)[NATIVE[cal]]
 
 
 # --------------------------------------------------------------------------
@@ -343,9 +362,14 @@ button {
   letter-spacing: 0.3px;
 }
 .day .sec .tag { font-weight: 700; }
-/* Month and year cells: wider and roomier than a day cell. */
-.day.pick { min-width: 150px; min-height: 84px; }
+/* Picker cells keep .day's floor and only ask for what they actually hold:
+   a year and its two corners (worst case 89px), then a month name (157px).
+   Measured across all three calendars, so it is a bound, not a guess. */
+.day.pick { min-width: 90px; }
+.day.month { min-width: 158px; }
 .day.pick .num { font-size: 16px; }
+/* The corners hold whole month names here, not two-digit day numbers. */
+.day.pick .sec { font-size: 10.5px; }
 .day.we .num { color: alpha(@theme_fg_color, 0.75); }
 .day.other { background-color: transparent; }
 .day.other .num { color: alpha(@theme_fg_color, 0.38); }
@@ -516,13 +540,22 @@ class Calendar(Gtk.ApplicationWindow):
     # ---- navigation ----
     def nav_month(self, delta):
         """‹ › move one unit of whatever is on screen: a month on the day
-        grid, a year on the month grid, a year on the year grid."""
+        grid, a year on the month grid, a whole page of years on the year
+        grid - a page is the unit there, because the picker shows one page
+        at a time and a single-year step would double back over it."""
         y, m = self.view
         if self.mode == "days":
             self.view = step(y, m, delta)
+        elif self.mode == "years":
+            self.view = (y + delta * YEARS_PER_PAGE, m)
         else:
             self.view = (y + delta, m)
         self.rebuild()
+
+    def _year_step(self):
+        """How far ↑ ↓ move the year: one year, unless the year picker is up
+        and the page is what is actually on screen."""
+        return YEARS_PER_PAGE if self.mode == "years" else 1
 
     def go_today(self):
         self.sel_jdn = self.today_jdn
@@ -545,9 +578,11 @@ class Calendar(Gtk.ApplicationWindow):
         if keyval in (Gdk.KEY_Right, Gdk.KEY_l):
             self.nav_month(1); return True
         if keyval in (Gdk.KEY_Up, Gdk.KEY_k):
-            self.view = (self.view[0] + 1, self.view[1]); self.rebuild(); return True
+            self.view = (self.view[0] + self._year_step(), self.view[1])
+            self.rebuild(); return True
         if keyval in (Gdk.KEY_Down, Gdk.KEY_j):
-            self.view = (self.view[0] - 1, self.view[1]); self.rebuild(); return True
+            self.view = (self.view[0] - self._year_step(), self.view[1])
+            self.rebuild(); return True
         if keyval in (Gdk.KEY_t, Gdk.KEY_Home):
             self.go_today(); return True
         if keyval in (Gdk.KEY_1, Gdk.KEY_2, Gdk.KEY_3):
@@ -569,7 +604,16 @@ class Calendar(Gtk.ApplicationWindow):
         Keeping the tag in its own label is what makes the bidi safe: an
         Arabic tag can never swallow the digits that follow it, because they
         are not in the same text run. It is also what gives the requested
-        breathing room between the letter and the day number."""
+        breathing room between the letter and the day number.
+
+        No `ellipsize`, deliberately. GTK4 labels *latch*: a label that is
+        once laid out in a slot narrower than its text measures its natural
+        width from then on as the ellipsised width (November: 65px as built,
+        55px after one narrow allocation) and never grows back, even once the
+        window is wider than it needs. A window always maps once before it
+        has its real size, so every corner month name latched and stayed as
+        "G Novemb..." in a cell with 49px going spare. Full text, sized
+        honestly, wins: the cell grows to fit instead."""
         b = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=gap)
         t = Gtk.Label(label=tag)
         t.add_css_class("tag")
@@ -580,11 +624,45 @@ class Calendar(Gtk.ApplicationWindow):
         b.append(n)
         return b
 
+    def _corner_boxes(self, cells):
+        """Pin one unit to each bottom corner of a Gtk.Overlay.
+
+        `cells` maps calendar key -> widget (built by `_pair_box`). Amazigh
+        always sits bottom-left, Hijri always bottom-right, Gregorian fills
+        whichever corner is free, so a system keeps the same corner no matter
+        which one you are browsing. Shared by the day, month and year cells:
+        three copies of this rule is how they drifted apart in the first
+        place."""
+        left_cal = "amazigh" if "amazigh" in cells else "gregorian"
+        right_cal = next(c for c in cells if c != left_cal)
+
+        corners = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        corners.add_css_class("sec")
+        corners.set_halign(Gtk.Align.FILL)
+        corners.set_valign(Gtk.Align.END)
+        corners.set_margin_start(4)
+        corners.set_margin_end(4)
+        corners.set_margin_bottom(5)
+
+        left = cells[left_cal]
+        left.set_halign(Gtk.Align.START)
+        left.set_hexpand(True)          # pushes the right pair outward
+        right = cells[right_cal]
+        right.set_halign(Gtk.Align.END)
+        corners.append(left)
+        corners.append(right)
+        return corners
+
     def _build_title(self, cal, y, m):
+        # Drop the script class first: it belongs to the days view only, and
+        # the year-only titles below must not inherit an Arabic/Tifinagh font.
+        for cls in ("lang-ar", "lang-tfng"):
+            self.title_lbl.remove_css_class(cls)
         if self.mode == "years":
             # No year button while the years themselves are on screen.
-            start = y - 5
-            self.title_lbl.set_text(f"{start} – {start + 11}")
+            start = y - YEAR_LEAD
+            self.title_lbl.set_text(
+                f"{start} – {start + YEARS_PER_PAGE - 1}")
             self.title_year.set_visible(False)
             self.title_sub.set_text("")
             return
@@ -596,12 +674,31 @@ class Calendar(Gtk.ApplicationWindow):
             self.title_sub.set_text("")
             return
         nm = month_name(cal, m)
-        self.title_lbl.set_text(nm["latin"])
-        self.title_sub.set_text(nm["tifinagh"])
+        # The month is named in the script of the system it belongs to, the
+        # rule the month picker cells already follow (month_native), so title
+        # and cell can never disagree: October in Latin, ربيع الآخر in Arabic,
+        # ⵜⴰⵎⵓⵣ in Tifinagh.
+        self.title_lbl.set_text(month_native(cal, m))
+        font_cls = CAL_LABEL[cal][1]        # "lang-ar" / "lang-tfng" / ""
+        if font_cls:
+            # Named font rather than Pango's own fallback: the same choice the
+            # switcher makes for its buttons, so the title matches them.
+            self.title_lbl.add_css_class(font_cls)
+        # Second line is the same month in another script - Tifinagh unless
+        # the title is already Tifinagh, which would print it twice.
+        self.title_sub.set_text(
+            nm["latin"] if NATIVE[cal] == "tifinagh" else nm["tifinagh"])
 
     def _build_info(self):
         """Today in all three systems. Split into labels for the same bidi
-        reason as the day cells, plus a real gap after each period tag."""
+        reason as the day cells, plus a real gap after each period tag.
+
+        Each system is written in its own script - October in Latin, ربيع
+        الآخر in Arabic, ⵣ Cutanbir in Tifinagh - so the strip follows the
+        same rule as the title and the month cells. Day, month and year are
+        three labels rather than one string for that reason too: an Arabic
+        run holding Western digits lets Pango flip the paragraph and print
+        "4 1447 ربيع الآخر" in the order it pleases."""
         self._clear(self.info)
         self.info.append(Gtk.Label(label="Today"))
         for i, c in enumerate(CAL_ORDER):
@@ -609,9 +706,18 @@ class Calendar(Gtk.ApplicationWindow):
             sep.add_css_class("sep")
             self.info.append(sep)
             cy, cm, cd = to_cal(self.today_jdn, c)
-            mn = month_name(c, cm)
-            self.info.append(self._pair_box(
-                CALS[c][1], f"{cd} {mn['latin']} {cy}", gap=4))
+            unit = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+            tag = Gtk.Label(label=CALS[c][1])
+            tag.add_css_class("tag")
+            unit.append(tag)
+            unit.append(Gtk.Label(label=str(cd)))
+            mn = Gtk.Label(label=month_native(c, cm))
+            font_cls = CAL_LABEL[c][1]
+            if font_cls:
+                mn.add_css_class(font_cls)
+            unit.append(mn)
+            unit.append(Gtk.Label(label=str(cy)))
+            self.info.append(unit)
 
     def _build_days(self, cal, y, m):
         # weekday header row
@@ -655,13 +761,6 @@ class Calendar(Gtk.ApplicationWindow):
             if jdn == self.sel_jdn:
                 btn.add_css_class("sel")
 
-            # Which secondary calendar goes in which corner. Amazigh always
-            # sits bottom-left, Hijri always bottom-right, and Gregorian
-            # fills whichever corner is left free - so each system keeps the
-            # same corner regardless of which one you are browsing.
-            left_cal = "amazigh" if "amazigh" in others else "gregorian"
-            right_cal = next(c for c in others if c != left_cal)
-
             # Gtk.Overlay rather than a vertical box: the day number must be
             # centred in the whole cell, not in the space left over above the
             # corner row. The box would push it up; the overlay pins the
@@ -673,31 +772,31 @@ class Calendar(Gtk.ApplicationWindow):
             num.set_valign(Gtk.Align.CENTER)
             ov.set_child(num)
 
-            # Margins + spacing kept equal to the 9px gap the old single-row
-            # layout used, so a cell does not get any wider than it was: a
-            # wider cell would push the grid past the popup's natural width.
-            corners = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
-            corners.add_css_class("sec")
-            corners.set_halign(Gtk.Align.FILL)
-            corners.set_valign(Gtk.Align.END)
-            corners.set_margin_start(4)
-            corners.set_margin_end(4)
-            corners.set_margin_bottom(5)
-
-            left = self._pair_box(CALS[left_cal][1],
-                                  str(to_cal(jdn, left_cal)[2]))
-            left.set_halign(Gtk.Align.START)
-            left.set_hexpand(True)          # pushes the right pair outward
-            right = self._pair_box(CALS[right_cal][1],
-                                   str(to_cal(jdn, right_cal)[2]))
-            right.set_halign(Gtk.Align.END)
-            corners.append(left)
-            corners.append(right)
-            ov.add_overlay(corners)
+            # Which corner each system takes is decided in _corner_boxes; the
+            # cell itself is built exactly like a day cell - same overlay,
+            # same corner row, no sizing of its own.
+            cells = {oc: self._pair_box(CALS[oc][1], str(to_cal(jdn, oc)[2]))
+                     for oc in others}
+            ov.add_overlay(self._corner_boxes(cells))
 
             btn.set_child(ov)
             btn.connect("clicked", self.on_pick, jdn)
             self.grid.attach(btn, col, row, 1, 1)
+
+    def _months_at(self, cal, y, m):
+        """(calendar key, month name in that system's own script) for the
+        other two systems at the middle of calendar month y/m.
+
+        The midpoint, not the first day: a Gregorian January spans two Hijri
+        months, and the one holding most of it is the useful answer. This is
+        the same idea _years_at uses for years."""
+        try:
+            first, length = month_bounds(cal, y, m)
+            jdn = first + length // 2
+        except (IndexError, OverflowError, ValueError):
+            return []
+        return [(oc, month_native(oc, to_cal(jdn, oc)[1]))
+                for oc in CAL_ORDER if oc != cal]
 
     def _build_months(self, cal, y, m):
         ty, tm, _ = to_cal(self.today_jdn, cal)
@@ -706,27 +805,36 @@ class Calendar(Gtk.ApplicationWindow):
             btn = Gtk.Button()
             btn.add_css_class("day")
             btn.add_css_class("pick")
+            btn.add_css_class("month")
             if (ty, tm) == (y, mm):
                 btn.add_css_class("today")
             if mm == m:
                 btn.add_css_class("sel")
 
-            nm = month_name(cal, mm)
-            vb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
-            vb.set_halign(Gtk.Align.CENTER)
-            num = Gtk.Label(label=nm["latin"])
+            # Same shape as a day cell: the month in its own script centred in
+            # the whole cell, the other two systems split the bottom row.
+            # Latin January, Arabic مُحرَّم, Tifinagh ⵉⵏⵏⴰⵢⵔ -- a month is
+            # read in the script of its own system, not transliterated.
+            ov = Gtk.Overlay()
+            num = Gtk.Label(label=month_native(cal, mm))
             num.add_css_class("num")
-            vb.append(num)
-            sub = Gtk.Label(label=nm["tifinagh"])
-            sub.add_css_class("sec")
-            vb.append(sub)
+            num.set_halign(Gtk.Align.CENTER)
+            num.set_valign(Gtk.Align.CENTER)
+            ov.set_child(num)
 
-            btn.set_child(vb)
+            cells = {oc: self._pair_box(CALS[oc][1], name)
+                     for oc, name in self._months_at(cal, y, mm)}
+            if cells:
+                ov.add_overlay(self._corner_boxes(cells))
+
+            btn.set_child(ov)
             btn.connect("clicked", self.on_pick_month, mm)
             self.grid.attach(btn, i % 4, i // 4, 1, 1)
 
     def _years_at(self, cal, y):
-        """(tag, year) for the other systems at the middle of calendar year y."""
+        """(calendar key, year) for the other systems at the middle of
+        calendar year y -- the midpoint, because a Hijri year straddles two
+        Gregorian ones and the middle says which is which."""
         try:
             if cal == "gregorian":
                 jdn = g2j(y, 7, 1)
@@ -737,13 +845,13 @@ class Calendar(Gtk.ApplicationWindow):
                 jdn = first + length // 2
         except (IndexError, OverflowError, ValueError):
             return []
-        return [(CALS[oc][1], str(to_cal(jdn, oc)[0]))
+        return [(oc, str(to_cal(jdn, oc)[0]))
                 for oc in CAL_ORDER if oc != cal]
 
     def _build_years(self, cal, y):
-        start = y - 5
+        start = y - YEAR_LEAD
         today_y = to_cal(self.today_jdn, cal)[0]
-        for i in range(12):
+        for i in range(YEARS_PER_PAGE):
             yy = start + i
             btn = Gtk.Button()
             btn.add_css_class("day")
@@ -754,22 +862,21 @@ class Calendar(Gtk.ApplicationWindow):
             if yy == y:
                 btn.add_css_class("sel")
 
-            vb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
-            vb.set_halign(Gtk.Align.CENTER)
+            # Identical shape to the day and month cells: the year centred,
+            # the other two systems split the bottom corners.
+            ov = Gtk.Overlay()
             num = Gtk.Label(label=str(yy))
             num.add_css_class("num")
-            vb.append(num)
+            num.set_halign(Gtk.Align.CENTER)
+            num.set_valign(Gtk.Align.CENTER)
+            ov.set_child(num)
 
-            others = self._years_at(cal, yy)
-            if others:
-                sec = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
-                sec.add_css_class("sec")
-                sec.set_halign(Gtk.Align.CENTER)
-                for tag, other_y in others:
-                    sec.append(self._pair_box(tag, other_y))
-                vb.append(sec)
+            cells = {oc: self._pair_box(CALS[oc][1], other_y)
+                     for oc, other_y in self._years_at(cal, yy)}
+            if cells:
+                ov.add_overlay(self._corner_boxes(cells))
 
-            btn.set_child(vb)
+            btn.set_child(ov)
             btn.connect("clicked", self.on_pick_year, yy)
             self.grid.attach(btn, i % 4, i // 4, 1, 1)
 
