@@ -1,7 +1,9 @@
 #!/bin/bash
 # Manual install into $HOME, for people not using the AUR package.
-# Idempotent: config/style.css/waybar launcher are only written if missing,
-# so rerunning never clobbers a personal setup.
+# Idempotent: config is only written if missing, so rerunning never clobbers a
+# personal setup. Nothing is written into a status bar's directory - the
+# launcher goes on PATH under the same name the AUR package uses, so a manual
+# install and a packaged install are interchangeable.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -9,9 +11,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_DIR="$HOME/.local/bin"
 DATA_DIR="$HOME/.local/share/hypr-calendar"
 CONF_DIR="$HOME/.config/hypr-calendar"
-WAYBAR_DIR="$HOME/.config/waybar/scripts"
 
 install -Dm755 "$HERE/src/hypr-calendar" "$BIN_DIR/hypr-calendar"
+install -Dm755 "$HERE/scripts/calendar.sh" "$BIN_DIR/hypr-calendar-toggle"
 install -Dm644 "$HERE/src/data.json" "$DATA_DIR/data.json"
 
 mkdir -p "$CONF_DIR"
@@ -19,13 +21,13 @@ if [ ! -e "$CONF_DIR/style.css" ]; then
     install -Dm644 "$HERE/config/style.css" "$CONF_DIR/style.css"
 fi
 
-if [ ! -e "$WAYBAR_DIR/calendar.sh" ]; then
-    install -Dm755 "$HERE/scripts/calendar.sh" "$WAYBAR_DIR/calendar.sh"
-    echo "installed launcher -> $WAYBAR_DIR/calendar.sh"
-fi
-
-echo "installed widget    -> $BIN_DIR/hypr-calendar"
-echo "installed tables    -> $DATA_DIR/data.json"
+echo "installed widget   -> $BIN_DIR/hypr-calendar"
+echo "installed launcher -> $BIN_DIR/hypr-calendar-toggle"
+echo "installed tables   -> $DATA_DIR/data.json"
 echo
-echo "Point your waybar clock at it:"
-echo "  \"on-click\": \"$WAYBAR_DIR/calendar.sh\""
+echo "Bind the launcher, not the widget - it is what floats and toggles:"
+echo "  hl.bind({ mods = \"SUPER\", key = \"C\", desc = \"calendar\","
+echo "            cmd = \"hypr-calendar-toggle\" })"
+echo
+echo "Running waybar? Point a clock at the same command if you want it one"
+echo "click away. It is a convenience, not a requirement."

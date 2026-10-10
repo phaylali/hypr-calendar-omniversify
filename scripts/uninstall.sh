@@ -5,8 +5,11 @@
 set -euo pipefail
 
 rm -f "$HOME/.local/bin/hypr-calendar"
+rm -f "$HOME/.local/bin/hypr-calendar-toggle"
 rm -f "$HOME/.local/share/hypr-calendar/data.json"
 rmdir --ignore-fail-on-non-empty "$HOME/.local/share/hypr-calendar" 2>/dev/null || true
+# Launcher location used before the manual install moved it onto PATH. Left in
+# so an older install cleans up after itself.
 rm -f "$HOME/.config/waybar/scripts/calendar.sh"
 
 if [ "${1:-}" = "--purge" ]; then

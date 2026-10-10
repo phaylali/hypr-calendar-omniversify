@@ -7,7 +7,9 @@
 # So the window is floated explicitly instead:
 #   1. spawn through an exec rule  -> the window maps already floating
 #   2. resize + centre it through hl.dsp.window.*
-# Clicking the waybar clock while it is open closes it (launcher behaviour).
+# Running it again while it is open closes it (launcher behaviour) - the
+# trigger is irrelevant: keybind, bar click or a launcher entry all do the same,
+# because this script only ever talks to hyprctl.
 
 set -u
 

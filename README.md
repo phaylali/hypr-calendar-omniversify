@@ -4,6 +4,11 @@ A three-calendar overlay for **Hyprland**: Gregorian, Hijri (Umm al-Qura) and
 Amazigh (Tifinagh), shown side by side in every cell, in one small floating
 window.
 
+**It is a standalone app, not a bar module.** `hypr-calendar` is an ordinary
+program you run from a keybind or a launcher; it needs no status bar, no panel
+API and no daemon. Waybar is optional and purely for convenience — binding the
+toggle to the clock puts it one click away instead of one keystroke away.
+
 | | |
 |---|---|
 | Toolkit | GTK 4 (PyGObject) |
@@ -11,6 +16,7 @@ window.
 | Window type | normal XDG toplevel (not layer-shell) |
 | Calendars | Gregorian · Hijri (Umm al-Qura) · Amazigh (Julian) |
 | Data | vendored `src/data.json`, validated against morocco-date-api + Aladhan |
+| Status bar | none required — waybar, any other bar, or nothing at all |
 | License | [The Unlicense](LICENSE.md) — public domain |
 
 ---
@@ -58,7 +64,7 @@ The two things worth having are the ones a `waybar`/`eww` widget cannot give you
   picker and the year picker — and no corner is ever truncated: cells grow to
   fit the names they carry (see `DEV_NOTES.md`).
 - **Month names in their own script.** `January` in Latin, `المحرّم` in Arabic,
-  `ⵉⵏⵏⴰⵢⵔ` in Tifinagh — each system is read in the script it belongs to
+  `ⵢⵏⵏⴰⵢⵔ` in Tifinagh — each system is read in the script it belongs to
   rather than transliterated, and the other two appear as the corners.
 
 ---
@@ -98,8 +104,26 @@ it follows your desktop rather than shipping a palette of its own.
 yay -S omniversify-hypr-calendar
 ```
 
-The package installs `/usr/bin/hypr-calendar` and
-`/usr/bin/hypr-calendar-toggle`. Point your waybar clock at the toggle:
+The package installs two things:
+
+| | |
+|---|---|
+| `/usr/bin/hypr-calendar` | the widget itself |
+| `/usr/bin/hypr-calendar-toggle` | the launcher: opens it floating, centred, and toggles it |
+
+**Bind `hypr-calendar-toggle` — not `hypr-calendar`.** The bare widget opens as
+an ordinary tiled window, because Hyprland does not float it on its own; the
+toggle script is what floats, resizes and centres it, and what makes a second
+invocation close it instead of stacking a second copy. Any keybind will do:
+
+```lua
+-- ~/.config/hypr/hyprland.lua
+hl.bind({ mods = "SUPER", key = "C", desc = "calendar",
+          cmd = "hypr-calendar-toggle" })
+```
+
+If you happen to run waybar, pointing the clock at the same script is a
+convenience and nothing more:
 
 ```jsonc
 "clock": { "on-click": "hypr-calendar-toggle" }
@@ -116,9 +140,12 @@ which puts:
 | file | destination |
 |---|---|
 | `src/hypr-calendar` | `~/.local/bin/hypr-calendar` |
+| `scripts/calendar.sh` | `~/.local/bin/hypr-calendar-toggle` |
 | `src/data.json` | `~/.local/share/hypr-calendar/data.json` |
 | `config/style.css` | `~/.config/hypr-calendar/style.css` (only if absent) |
-| `scripts/calendar.sh` | `~/.config/waybar/scripts/calendar.sh` (only if absent) |
+
+Make sure `~/.local/bin` is on `PATH`. A manual install and the AUR package put
+the same two commands in the same place, so the keybind above works for both.
 
 `./scripts/uninstall.sh` reverses it (`--purge` also drops your config).
 
@@ -127,27 +154,31 @@ missing.
 
 ### Requirements
 
-`python-gtk4` (PyGObject + GTK 4), `hyprland`, and any waybar setup that can
-run a script on clock click. Fonts: `Noto Sans Arabic` for the Hijri tag,
-`Noto Sans Tifinagh` for Amazigh.
+- `python`, `python-gobject`, `gtk4`, `hyprland` — the widget and its launcher.
+  Nothing here is a bar; **no status bar is required at all.**
+- `noto-fonts` — listed as optional in the package, and you should install it
+  anyway. The stylesheet asks for `Noto Sans Arabic` and `Noto Sans Tifinagh`
+  by name, and on a bare install nothing else covers those codepoints, so the
+  `هجري` and `ⵉⵎⴰⵣⵉⴳⵏ` buttons and every Arabic and Tifinagh month name come
+  up as boxes. Gregorian still works; half the point of the widget does not.
+- A waybar setup that can run a script on click — **only if you want the clock
+  bound to it.** Skip it and bind a key instead; nothing else changes.
 
 ---
 
 ## Usage
 
-- **Waybar clock click** → toggles the overlay (open if closed, close if open).
+- **`hypr-calendar-toggle`** → opens the overlay (floating, centred); running it
+  again closes it. Bind it to a key, a launcher, or a bar click — the script
+  does not care which.
 - **Drag** the header bar to move it; it is a normal window, so it behaves like
   one.
 - **`Escape`** → day grid → month picker → year picker → close.
 - Click the **year in the title** to jump straight to the year picker.
 
-Bind it to a key the same way you would any other launcher:
-
-```lua
--- ~/.config/hypr/hyprland.lua
-hl.bind({ mods = "SUPER", key = "C", desc = "calendar",
-          cmd = "$HOME/.config/waybar/scripts/calendar.sh" })
-```
+Running `hypr-calendar` directly instead of the toggle works, but you get a
+plain tiled window with no toggle behaviour — the launcher script is what does
+the floating, resizing and centring.
 
 ---
 
@@ -178,8 +209,9 @@ GTK CSS accepts `/* */` comments only.
 src/hypr-calendar      the widget (single Python file)
 src/data.json          vendored calendar tables
 config/style.css       optional user override (comments only)
-scripts/calendar.sh    waybar launcher: float, resize, centre, toggle
+scripts/calendar.sh    the launcher: float, resize, centre, toggle
 scripts/install.sh     manual install into $HOME
+scripts/uninstall.sh   reverses install.sh (--purge also drops the config)
 packaging/             PKGBUILD for the AUR package
 screenshots/           the three screens, as shown in this README
 DEV_NOTES.md           architecture, quirks, and the things that bit us
